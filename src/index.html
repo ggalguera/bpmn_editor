@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced BPMN Editor</title>
+</head>
+<body>
+    <div id="messageArea"></div>
+    <div class="file-input">
+    <button id="newDiagram">New Diagram</button>
+    <button id="loadDiagram">Load Diagram</button>
+    <button id="saveDiagram">Save Diagram</button>
+    <button id="exportDiagram">Export BPMN</button>
+    <button id="formatCustomProperties">Format JSON</button>
+    <button id="loadLucidCSV">Import Lucid</button>
+    <button id="autoLayout" type="button">Auto Layout</button>
+  </div>
+
+  <div class="container">
+    <div id="canvas"></div>
+  <div id="properties">
+    <h3>Element Properties</h3>
+    <div class="property-panel">
+      <label>Element ID:</label>
+      <input type="text" id="elementId" disabled>
+    </div>
+    <div class="property-panel">
+      <label>Element Type:</label>
+      <input type="text" id="elementType" disabled>
+    </div>
+    <div class="property-panel">
+      <label>Name:</label>
+      <input type="text" id="elementName">
+    </div>
+    <div class="property-panel">
+      <label>Description:</label>
+      <textarea id="elementDescription"></textarea>
+    </div>
+    <div class="property-panel">
+      <label>Custom Properties:</label>
+      <textarea id="customProperties" placeholder="Enter JSON format custom properties"></textarea>
+    </div>
+    <div class="button-panel">
+      <button id="saveProperties">Save Properties</button>
+      <button id="resetProperties">Reset</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>
