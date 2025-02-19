@@ -24,6 +24,7 @@ module.exports = {
   devServer: {
     host: '0.0.0.0',  // Allow external access
     port: 9000,
-    allowedHosts: 'all'
+    allowedHosts: 'all',
+    https: true
   }
 };
