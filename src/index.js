@@ -388,17 +388,32 @@ function parseCustomProperties(comments) {
 
 function createGraph(shapes, connections) {
   const graph = new Map();
+  
+  // Initialize graph with shapes
   shapes.forEach(shape => {
-    graph.set(shape.id, { shape, next: [], prev: [], level: -1 });
+    if (!graph.has(shape.id)) {
+      graph.set(shape.id, {
+        shape,
+        prev: [],
+        next: [],
+        level: -1
+      });
+    }
   });
   
+  // Add connections with validation
   connections.forEach(conn => {
     const sourceId = `Shape_${conn['Line Source']}`;
     const targetId = `Shape_${conn['Line Destination']}`;
     
     if (graph.has(sourceId) && graph.has(targetId)) {
-      graph.get(sourceId).next.push(targetId);
-      graph.get(targetId).prev.push(sourceId);
+      const sourceNode = graph.get(sourceId);
+      const targetNode = graph.get(targetId);
+      
+      sourceNode.next.push(targetId);
+      targetNode.prev.push(sourceId);
+    } else {
+      console.warn(`Invalid connection between ${sourceId} and ${targetId}`);
     }
   });
   
@@ -450,13 +465,30 @@ async function importLucidCSV(csvContent) {
   try {
     const bpmnXML = convertToBPMN(csvContent);
     await modeler.importXML(bpmnXML);
-    const canvas = modeler.get('canvas');
-    canvas.zoom('fit-viewport');
+    
+    // Apply auto layout after import
+    // await applyAutoLayout();
+    
     showMessage('Lucid CSV imported successfully', 'success');
+
   } catch (error) {
     console.error('Error importing Lucid CSV:', error);
     showMessage('Error importing Lucid CSV', 'error');
   }
+}
+
+function validateConnections(shapes, connections) {
+  const validConnections = connections.filter(conn => {
+    const sourceExists = shapes.some(s => s.id === `Shape_${conn['Line Source']}`);
+    const targetExists = shapes.some(s => s.id === `Shape_${conn['Line Destination']}`);
+    
+    if (!sourceExists || !targetExists) {
+      console.warn(`Invalid connection ${conn.Id}: source or target missing`);
+      return false;
+    }
+    return true;
+  });
+  return validConnections;
 }
 
 function assignLevels(graph) {
@@ -528,13 +560,21 @@ function calculateAutoLayout(shapes, connections) {
 }
 
 function calculateConnectionPoints(sourceShape, targetShape) {
+  // Add null checks at the beginning
+  if (!sourceShape || !targetShape) {
+    return {
+      sourcePoint: { x: 0, y: 0 },
+      targetPoint: { x: 0, y: 0 }
+    };
+  }
+
   const sourceCenter = {
-    x: sourceShape.x + sourceShape.width/2,
-    y: sourceShape.y + sourceShape.height/2
+    x: sourceShape.x + (sourceShape.width || 0)/2,
+    y: sourceShape.y + (sourceShape.height || 0)/2
   };
   const targetCenter = {
-    x: targetShape.x + targetShape.width/2,
-    y: targetShape.y + targetShape.height/2
+    x: targetShape.x + (targetShape.width || 0)/2,
+    y: targetShape.y + (targetShape.height || 0)/2
   };
 
   // Prefer horizontal connections for left-to-right layout
@@ -566,25 +606,58 @@ function convertToBPMN(csvContent) {
   const shapes = [];
   const connections = [];
   
-  // First pass: Create shapes
-  rows.forEach((row, index) => {
-    if (row.Name === 'Document' || row.Name === 'Page') return;
-    
-    if (row.Name === 'Line') {
-      connections.push(row);
-      return;
+  // Initialize connection map with proper structure
+  const connectionMap = new Map();
+  
+  // First pass: Initialize all shapes in the connection map
+  rows.forEach(row => {
+    if (row.Name !== 'Line' && row.Name !== 'Document' && row.Name !== 'Page') {
+      const shapeId = `Shape_${row.Id}`;
+      connectionMap.set(shapeId, { incoming: [], outgoing: [] });
     }
+  });
+
+  // Second pass: Map connections
+  rows.forEach(row => {
+    if (row.Name === 'Line') {
+      const sourceId = `Shape_${row['Line Source']}`;
+      const targetId = `Shape_${row['Line Destination']}`;
+      const flowId = `Flow_${row.Id}`;
+      
+      // Ensure both source and target exist in the map
+      if (!connectionMap.has(sourceId)) {
+        connectionMap.set(sourceId, { incoming: [], outgoing: [] });
+      }
+      if (!connectionMap.has(targetId)) {
+        connectionMap.set(targetId, { incoming: [], outgoing: [] });
+      }
+      
+      // Add the connections
+      connectionMap.get(sourceId).outgoing.push(flowId);
+      connectionMap.get(targetId).incoming.push(flowId);
+      
+      connections.push(row);
+    }
+  });
+
+  // Create shapes with incoming/outgoing references
+  rows.forEach((row, index) => {
+    if (row.Name === 'Document' || row.Name === 'Page' || row.Name === 'Line') return;
     
+    const shapeId = `Shape_${row.Id}`;
+    const shapeConnections = connectionMap.get(shapeId) || { incoming: [], outgoing: [] };
     const customProps = parseCustomProperties(row.comments);
     
     let shape = {
-      id: `Shape_${row.Id}`,
+      id: shapeId,
       type: 'unknown',
       name: row['Text Area 1'] || '',
       x: 0,
       y: 0,
       width: 100,
       height: 80,
+      incoming: shapeConnections.incoming,
+      outgoing: shapeConnections.outgoing,
       customProperties: customProps
     };
     
@@ -617,11 +690,17 @@ function convertToBPMN(csvContent) {
     
     shapes.push(shape);
   });
-  
+
   // Auto-layout the shapes
   const layoutedShapes = calculateAutoLayout(shapes, connections);
   
-  // Generate BPMN XML
+  // Create references before generating XML
+  createConnectionReferences(shapes, connections);
+
+  // Validate connections before generating XML
+  const validConnections = validateConnections(shapes, connections);
+
+  // Generate BPMN XML with validated connections
   const bpmnXML = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions 
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
@@ -633,35 +712,33 @@ function convertToBPMN(csvContent) {
   id="Definitions_1" 
   targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:process id="Process_1" isExecutable="false">
-    ${layoutedShapes.map(shape => {
-      const customProps = Object.entries(shape.customProperties)
-        .map(([key, value]) => `custom:${key}="${typeof value === 'object' ? JSON.stringify(value) : value}"`)
-        .join(' ');
-      
-      return `<${shape.type} id="${shape.id}" name="${shape.name}" ${customProps}/>`;
-    }).join('\n    ')}
+    ${shapes.map(shape => `
+      <${shape.type} id="${shape.id}" name="${shape.name || ''}">${
+        shape.incoming.map(ref => `
+          <bpmn:incoming>${ref}</bpmn:incoming>`).join('')}${
+        shape.outgoing.map(ref => `
+          <bpmn:outgoing>${ref}</bpmn:outgoing>`).join('')}
+      </${shape.type}>`
+    ).join('\n    ')}
     
-    ${connections.map(conn => {
-      const sourceShape = shapes.find(s => s.id === `Shape_${conn['Line Source']}`);
-      const targetShape = shapes.find(s => s.id === `Shape_${conn['Line Destination']}`);
-      
-      if (!sourceShape || !targetShape) return '';
-      
-      return `<bpmn:sequenceFlow id="Flow_${conn.Id}" 
-        sourceRef="${sourceShape.id}" 
-        targetRef="${targetShape.id}" 
-        name="${conn['Text Area 1'] || ''}" />`;
-    }).join('\n    ')}
+    ${validConnections.map(conn => `
+      <bpmn:sequenceFlow 
+        id="Flow_${conn.Id}" 
+        sourceRef="Shape_${conn['Line Source']}" 
+        targetRef="Shape_${conn['Line Destination']}" 
+        name="${conn['Text Area 1'] || ''}" />`
+    ).join('\n    ')}
   </bpmn:process>
   
   <bpmndi:BPMNDiagram id="BPMNDiagram_1">
     <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_1">
-      ${layoutedShapes.map(shape => `
-      <bpmndi:BPMNShape id="${shape.id}_di" bpmnElement="${shape.id}">
-        <dc:Bounds x="${shape.x}" y="${shape.y}" width="${shape.width}" height="${shape.height}" />
-      </bpmndi:BPMNShape>`).join('\n      ')}
+      ${shapes.map(shape => `
+        <bpmndi:BPMNShape id="${shape.id}_di" bpmnElement="${shape.id}">
+          <dc:Bounds x="${shape.x}" y="${shape.y}" width="${shape.width}" height="${shape.height}" />
+        </bpmndi:BPMNShape>`
+      ).join('\n      ')}
       
-      ${connections.map(conn => {
+      ${validConnections.map(conn => {
         const sourceShape = shapes.find(s => s.id === `Shape_${conn['Line Source']}`);
         const targetShape = shapes.find(s => s.id === `Shape_${conn['Line Destination']}`);
         
@@ -669,14 +746,34 @@ function convertToBPMN(csvContent) {
         
         const {sourcePoint, targetPoint} = calculateConnectionPoints(sourceShape, targetShape);
         
-        return `<bpmndi:BPMNEdge id="Flow_${conn.Id}_di" bpmnElement="Flow_${conn.Id}">
-            <di:waypoint x="${sourcePoint.x}" y="${sourcePoint.y}" />
-            <di:waypoint x="${targetPoint.x}" y="${targetPoint.y}" />
+        return `
+        <bpmndi:BPMNEdge id="Flow_${conn.Id}_di" bpmnElement="Flow_${conn.Id}">
+          <di:waypoint x="${Math.round(sourcePoint.x)}" y="${Math.round(sourcePoint.y)}" />
+          <di:waypoint x="${Math.round(targetPoint.x)}" y="${Math.round(targetPoint.y)}" />
         </bpmndi:BPMNEdge>`;
-    }).join('\n      ')}
+      }).filter(Boolean).join('\n      ')}
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 </bpmn:definitions>`;
 
   return bpmnXML;
+}
+
+function createConnectionReferences(shapes, connections) {
+  connections.forEach(conn => {
+    const sourceId = `Shape_${conn['Line Source']}`;
+    const targetId = `Shape_${conn['Line Destination']}`;
+    const flowId = `Flow_${conn.Id}`;
+    
+    const sourceShape = shapes.find(s => s.id === sourceId);
+    const targetShape = shapes.find(s => s.id === targetId);
+    
+    if (sourceShape && targetShape) {
+      if (!sourceShape.outgoing) sourceShape.outgoing = [];
+      if (!targetShape.incoming) targetShape.incoming = [];
+      
+      sourceShape.outgoing.push(flowId);
+      targetShape.incoming.push(flowId);
+    }
+  });
 }
